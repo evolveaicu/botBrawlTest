@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Voice Agent</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 700px;
+            margin: 40px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        h2 {
+            color: #333;
+            text-align: center;
+        }
+
+        #chat {
+            border: 1px solid #ddd;
+            height: 400px;
+            overflow-y: auto;
+            padding: 15px;
+            background-color: white;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .message {
+            margin-bottom: 15px;
+            line-height: 1.5;
+        }
+
+        .message b {
+            color: #0066cc;
+        }
+
+        .system-message {
+            color: #666;
+            font-style: italic;
+        }
+
+        .input-container {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        #msg {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            transition: background-color 0.3s;
+        }
+
+        #sendBtn {
+            background-color: #0066cc;
+            color: white;
+        }
+
+        #sendBtn:hover {
+            background-color: #0052a3;
+        }
+
+        #sendBtn:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+
+        #micBtn {
+            background-color: #28a745;
+            color: white;
+            width: 100%;
+            padding: 15px;
+            font-size: 16px;
+        }
+
+        #micBtn:hover {
+            background-color: #218838;
+        }
+
+        #micBtn.recording {
+            background-color: #dc3545;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .status {
+            text-align: center;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+
+        .status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+
+        .status.info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+        }
+
+        .status.success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+    </style>
+</head>
+
+<body>
+
+<h2>🎙️ Groq Voice Agent</h2>
+
+<div id="status"></div>
+
+<div id="chat"></div>
+
+<div class="input-container">
+    <input id="msg" placeholder="Type your message..." onkeypress="handleEnter(event)">
+    <button id="sendBtn" onclick="sendMessage()">Send</button>
+</div>
+
+<button id="micBtn" onclick="toggleMic()">🎤 Start Voice Mode</button>
+
+<script>
+
+const API_URL = "http://localhost:8000";
+
+let mediaRecorder;
+let chunks = [];
+let recording = false;
+let isProcessing = false;
+
+// Check backend health on load
+window.addEventListener('load', checkBackend);
+
+async function checkBackend() {
+    try {
+        const res = await fetch(`${API_URL}/health`);
+        const data = await res.json();
+        if (data.status === 'healthy') {
+            showStatus('Backend connected ✓', 'success');
+            setTimeout(() => document.getElementById('status').innerHTML = '', 3000);
+        }
+    } catch (error) {
+        showStatus('⚠️ Backend not running. Please start the server with: uvicorn main:app --reload', 'error');
+    }
+}
+
+function showStatus(message, type = 'info') {
+    const statusDiv = document.getElementById('status');
+    statusDiv.className = `status ${type}`;
+    statusDiv.textContent = message;
+}
+
+function appendChat(role, text, isSystem = false) {
+    const div = document.getElementById("chat");
+    const messageClass = isSystem ? 'message system-message' : 'message';
+    div.innerHTML += `<div class="${messageClass}"><b>${role}:</b> ${text}</div>`;
+    div.scrollTop = div.scrollHeight;
+}
+
+function handleEnter(event) {
+    if (event.key === 'Enter') {
+        sendMessage();
+    }
+}
+
+// =======================
+// CHAT
+// =======================
+
+async function sendMessage() {
+    const input = document.getElementById("msg");
+    const message = input.value.trim();
+    const sendBtn = document.getElementById("sendBtn");
+
+    if (!message || isProcessing) return;
+
+    appendChat("You", message);
+    input.value = "";
+    isProcessing = true;
+    sendBtn.disabled = true;
+
+    try {
+        const res = await fetch(`${API_URL}/chat?message=${encodeURIComponent(message)}`, {
+            method: "POST"
+        });
+
+        const data = await res.json();
+
+        if (data.error) {
+            appendChat("System", `Error: ${data.error}`, true);
+        } else {
+            appendChat("Agent", data.response);
+            playTTS(data.response);
+        }
+    } catch (error) {
+        appendChat("System", `Error: ${error.message}`, true);
+        showStatus('Failed to send message. Is the backend running?', 'error');
+    } finally {
+        isProcessing = false;
+        sendBtn.disabled = false;
+    }
+}
+
+// =======================
+// TTS
+// =======================
+
+async function playTTS(text) {
+    try {
+        const res = await fetch(`${API_URL}/tts?text=${encodeURIComponent(text)}`, {
+            method: "POST"
+        });
+
+        if (!res.ok) {
+            console.error('TTS failed');
+            return;
+        }
+
+        const blob = await res.blob();
+        const audio = new Audio(URL.createObjectURL(blob));
+        audio.play();
+    } catch (error) {
+        console.error('TTS error:', error);
+    }
+}
+
+// =======================
+// VOICE MODE
+// =======================
+
+async function toggleMic() {
+    const btn = document.getElementById("micBtn");
+
+    if (!recording) {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+            mediaRecorder = new MediaRecorder(stream);
+            chunks = [];
+
+            mediaRecorder.ondataavailable = e => {
+                chunks.push(e.data);
+            };
+
+            mediaRecorder.onstop = sendAudio;
+
+            mediaRecorder.start();
+            recording = true;
+            btn.classList.add('recording');
+            btn.innerText = "🔴 Stop Recording";
+            showStatus('Recording... Click to stop', 'info');
+
+        } catch (error) {
+            showStatus('Microphone access denied', 'error');
+            console.error('Mic error:', error);
+        }
+
+    } else {
+        mediaRecorder.stop();
+        recording = false;
+        btn.classList.remove('recording');
+        btn.innerText = "🎤 Start Voice Mode";
+        
+        // Stop all tracks
+        mediaRecorder.stream.getTracks().forEach(track => track.stop());
+    }
+}
+
+// =======================
+// SEND AUDIO → STT → LLM
+// =======================
+
+async function sendAudio() {
+    const blob = new Blob(chunks, { type: 'audio/webm' });
+    chunks = [];
+
+    if (blob.size === 0) {
+        showStatus('No audio recorded', 'error');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", blob, "audio.webm");
+
+    appendChat("System", "🎧 Transcribing audio...", true);
+    showStatus('Transcribing...', 'info');
+
+    try {
+        // STT
+        const sttRes = await fetch(`${API_URL}/stt`, {
+            method: "POST",
+            body: formData
+        });
+
+        const sttData = await sttRes.json();
+
+        if (sttData.error) {
+            appendChat("System", `Transcription error: ${sttData.error}`, true);
+            showStatus('Transcription failed', 'error');
+            return;
+        }
+
+        if (!sttData.text || sttData.text.trim() === '') {
+            appendChat("System", "No speech detected. Please try again.", true);
+            showStatus('No speech detected', 'error');
+            return;
+        }
+
+        appendChat("You", sttData.text);
+        showStatus('Processing...', 'info');
+
+        // Chat
+        const chatRes = await fetch(`${API_URL}/chat?message=${encodeURIComponent(sttData.text)}`, {
+            method: "POST"
+        });
+
+        const chatData = await chatRes.json();
+
+        if (chatData.error) {
+            appendChat("System", `Chat error: ${chatData.error}`, true);
+            showStatus('Chat failed', 'error');
+        } else {
+            appendChat("Agent", chatData.response);
+            playTTS(chatData.response);
+            showStatus('Done!', 'success');
+            setTimeout(() => document.getElementById('status').innerHTML = '', 2000);
+        }
+
+    } catch (error) {
+        appendChat("System", `Error: ${error.message}`, true);
+        showStatus('Request failed. Check backend.', 'error');
+    }
+}
+
+</script>
+
+</body>
+</html>
